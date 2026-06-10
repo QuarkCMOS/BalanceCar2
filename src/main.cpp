@@ -73,8 +73,16 @@ uint32_t lastTelemetryMs = 0;
 float runtimeKp = PID_KP;
 float runtimeKi = PID_KI;
 float runtimeKd = PID_KD;
+float runtimeTargetAngle = TARGET_ANGLE;  // target angle có thể chỉnh từ web
 
 bool motorTestMode = false;
+
+// Tạm dừng gửi telemetry lên web (vẫn nhận lệnh)
+bool telemetryPaused = false;
+
+// Góc lúc khởi động — dùng làm target angle mặc định
+float bootAngle = 0.0f;
+bool  bootAngleCaptured = false;
 
 // Hướng di chuyển: 0=STOP 1=FWD 2=BWD 3=LEFT 4=RIGHT
 volatile int moveDir = 0;
@@ -131,11 +139,10 @@ void printHelp() {
 // ── Áp dụng hướng di chuyển vào target angle ─────────────────
 // Gọi mỗi control loop
 void applyMoveDir() {
-    float base = TARGET_ANGLE;
+    float base = runtimeTargetAngle;   // dùng runtime value, có thể chỉnh từ web
     switch (moveDir) {
         case 1:  balancer.setTargetAngle(base + FWD_OFFSET); break;  // FWD
         case 2:  balancer.setTargetAngle(base + BWD_OFFSET); break;  // BWD
-        // LEFT/RIGHT: lệch target nhẹ + differential — sẽ implement sau khi balance ổn
         case 3:  balancer.setTargetAngle(base + FWD_OFFSET); break;  // placeholder
         case 4:  balancer.setTargetAngle(base + FWD_OFFSET); break;  // placeholder
         default: balancer.setTargetAngle(base);              break;  // STOP
@@ -231,6 +238,18 @@ void onWSCommand(const String& key, float value) {
         Serial.printf("[WS-PID] Kp=%.2f Ki=%.3f Kd=%.3f\n",
                       runtimeKp, runtimeKi, runtimeKd);
     }
+    else if (key == "set_target") {
+        float angle = constrain(value, -30.0f, 30.0f);
+        // Ghi đè TARGET_ANGLE runtime — không cần recompile
+        // applyMoveDir() sẽ dùng runtimeTargetAngle thay vì hằng số
+        runtimeTargetAngle = angle;
+        balancer.setTargetAngle(angle);
+        Serial.printf("[WS-TARGET] targetAngle=%.2f\n", angle);
+    }
+    else if (key == "telemetry_pause") {
+        telemetryPaused = (value > 0.5f);
+        Serial.printf("[WS] Telemetry %s\n", telemetryPaused ? "PAUSED" : "RESUMED");
+    }
     else if (key == "power") {
         motorTestMode = false; moveDir = 0;
         if (value > 0.5f) {
@@ -325,6 +344,16 @@ void loop() {
     float dt = elapsed * 1e-6f;
 
     if (!motorTestMode) {
+        // Capture góc tại lần chạy balancer đầu tiên (~500ms sau boot)
+        // để dùng làm target angle mặc định — không cần chỉnh tay
+        if (!bootAngleCaptured && millis() > 500) {
+            bootAngle = balancer.getCurrentAngle();
+            bootAngleCaptured = true;
+            runtimeTargetAngle = bootAngle;
+            balancer.setTargetAngle(bootAngle);
+            Serial.printf("[BOOT] bootAngle=%.2f — dùng làm target angle mặc định\n",
+                          bootAngle);
+        }
         applyMoveDir();
         balancer.update(dt);
     }
@@ -335,7 +364,7 @@ void loop() {
     uint32_t nowMs = millis();
 
     // ── Telemetry WS @ TELEMETRY_INTERVAL_MS ─────────────────
-    if (nowMs - lastTelemetryMs >= TELEMETRY_INTERVAL_MS) {
+    if (!telemetryPaused && nowMs - lastTelemetryMs >= TELEMETRY_INTERVAL_MS) {
         lastTelemetryMs = nowMs;
 
         if (wsManager.hasClient()) {
@@ -354,7 +383,10 @@ void loop() {
             };
             telemetry.update(pl);
             wsManager.sendTelemetry(telemetry.buildTelemetryJSON());
+            // sendTelemetry() tự log nếu frame bị drop do timeout
         }
+    } else if (telemetryPaused) {
+        lastTelemetryMs = nowMs;  // reset timer để không flood khi resume
     }
 
     // ── Serial CSV 20 Hz ──────────────────────────────────────

@@ -75,7 +75,7 @@ canvas.spark{display:block;width:100%!important;height:30px}
 
 /* ── PID ── */
 .pid-card{grid-column:2/-1}
-.pid-inner{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.pid-inner{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
 .pid-row{display:flex;align-items:center;gap:6px;margin-bottom:5px}
 .pid-row label{width:14px;font-size:12px;font-weight:700;color:#888}
 .pid-row input{flex:1;background:var(--bg);border:1px solid var(--border2);color:var(--text);padding:4px 7px;border-radius:5px;font-size:12px;outline:none;transition:border-color .15s}
@@ -90,6 +90,7 @@ canvas.spark{display:block;width:100%!important;height:30px}
   .chart-card{grid-column:1/-1}
   .motor-card{grid-column:1/-1}
   .pid-card{grid-column:1/-1}
+  .pid-inner{grid-template-columns:1fr 1fr!important}
   .motor-grid{grid-template-columns:repeat(2,1fr)}
 }
 @media(max-width:420px){
@@ -107,6 +108,7 @@ canvas.spark{display:block;width:100%!important;height:30px}
     <span id="conn-text">Chưa kết nối</span>
     <span id="hz-badge">-- Hz</span>
     <button class="btn btn-blue" id="btn-conn" onclick="toggleConnect()">Connect</button>
+    <button class="btn" id="btn-pause" onclick="toggleTelemetryPause()" style="display:none">⏸ Pause</button>
   </div>
 </div>
 
@@ -227,7 +229,22 @@ canvas.spark{display:block;width:100%!important;height:30px}
         </div>
         <button class="btn-send" onclick="sendPID()">Gửi PID</button>
       </div>
-      <div id="log"></div>
+      <div class="pid-form">
+        <div style="font-size:8.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--dim);margin-bottom:8px">Target Angle</div>
+        <div class="pid-row">
+          <label style="color:var(--cyan);width:auto;margin-right:4px">&#952;</label>
+          <input type="number" id="in-target" step="0.5" value="-5.0" min="-30" max="30" oninput="document.getElementById('sl-target').value=this.value">
+          <span class="pid-cur" id="cur-target">&#8212;</span>
+        </div>
+        <div style="font-size:8px;color:var(--dim2);margin-bottom:8px;line-height:1.5">
+          G&oacute;c c&acirc;n b&#7857;ng m&#7863;c &eth;&#7883;nh.<br>D&#432;&#417;ng = nghi&ecirc;ng v&#7873; tr&#432;&#7899;c.
+        </div>
+        <input type="range" id="sl-target" min="-20" max="20" step="0.5" value="-5.0"
+               style="width:100%;accent-color:var(--cyan);cursor:pointer;margin-bottom:6px"
+               oninput="document.getElementById('in-target').value=this.value">
+        <button class="btn-send" style="background:var(--cyan);color:#000" onclick="sendTarget()">G&#7917;i Target</button>
+      </div>
+      <div id="log" style="grid-column:1/-1"></div>
     </div>
   </div>
 
@@ -368,6 +385,7 @@ requestAnimationFrame(drawSparks);
 var WS_URL = 'ws://192.168.4.1:81/';
 var ws = null, connected = false, reconnTimer = null, reconnCount = 0;
 var _mc = 0, _ht = performance.now();
+var firstMsgReceived = false;  // để auto-fill bootAngle vào ô Target lần đầu
 
 function toggleConnect() {
   if (connected || (ws && ws.readyState === WebSocket.CONNECTING)) {
@@ -419,6 +437,7 @@ function connect() {
   ws.onopen = function() {
     clearTimeout(connTimeout);
     reconnCount = 0;
+    firstMsgReceived = false;  // reset để capture bootAngle từ packet đầu
     setConn(true, '192.168.4.1 ✓');
     _ht = performance.now(); _mc = 0;
     addLog('[WS] Kết nối thành công!');
@@ -479,6 +498,25 @@ function setConn(ok, label) {
   dot.className = 'dot ' + (ok ? 'ok' : 'err');
   document.getElementById('conn-text').textContent = label;
   document.getElementById('btn-conn').textContent = ok ? 'Disconnect' : 'Connect';
+  // Hiện nút Pause khi kết nối, ẩn khi ngắt
+  document.getElementById('btn-pause').style.display = ok ? '' : 'none';
+  if (!ok) { telPaused = false; updatePauseBtn(); }
+}
+
+// ── Telemetry Pause ────────────────────────────────────────────
+var telPaused = false;
+function updatePauseBtn() {
+  var btn = document.getElementById('btn-pause');
+  btn.textContent = telPaused ? '▶ Resume' : '⏸ Pause';
+  btn.style.borderColor = telPaused ? 'var(--orange)' : '';
+  btn.style.color       = telPaused ? 'var(--orange)' : '';
+}
+function toggleTelemetryPause() {
+  if (!ws || ws.readyState !== 1) return;
+  telPaused = !telPaused;
+  ws.send(JSON.stringify({ type:'TELEMETRY_PAUSE', pause: telPaused }));
+  updatePauseBtn();
+  addLog('[TEL] ' + (telPaused ? 'PAUSED — xe vẫn nhận lệnh điều khiển' : 'RESUMED'));
 }
 
 function onMsg(evt) {
@@ -504,6 +542,16 @@ function onMsg(evt) {
   var rl     = d.rl  ?? 0;
   var rr     = d.rr  ?? 0;
   var state  = d.s   ?? 'IDLE';
+
+  // Packet đầu tiên sau kết nối → tự điền bootAngle vào ô Target
+  if (!firstMsgReceived) {
+    firstMsgReceived = true;
+    var bootT = parseFloat(target.toFixed(2));
+    document.getElementById('in-target').value = bootT;
+    document.getElementById('sl-target').value = bootT;
+    document.getElementById('cur-target').textContent = bootT.toFixed(1) + '°';
+    addLog('[BOOT] Target angle tự động: ' + bootT.toFixed(2) + '°');
+  }
 
   // Metrics
   $('m-angle',  angle.toFixed(2));
@@ -546,6 +594,18 @@ function sendPID() {
   var t = new Date();
   addLog('[' + pad(t.getHours()) + ':' + pad(t.getMinutes()) + ':' + pad(t.getSeconds())
          + '] P=' + kp + ' I=' + ki + ' D=' + kd);
+}
+function sendTarget() {
+  if (!ws || ws.readyState !== 1) { addLog('WS chưa kết nối'); return; }
+  var angle = parseFloat(document.getElementById('in-target').value);
+  if (isNaN(angle) || angle < -30 || angle > 30) { addLog('[ERR] Target phải trong [-30, 30]'); return; }
+  // Đồng bộ slider
+  document.getElementById('sl-target').value = angle;
+  ws.send(JSON.stringify({ type:'TARGET', angle:angle }));
+  document.getElementById('cur-target').textContent = angle.toFixed(1) + '°';
+  var t = new Date();
+  addLog('[' + pad(t.getHours()) + ':' + pad(t.getMinutes()) + ':' + pad(t.getSeconds())
+         + '] Target=' + angle.toFixed(1) + '°');
 }
 function pad(n) { return String(n).padStart(2,'0'); }
 function addLog(msg) {

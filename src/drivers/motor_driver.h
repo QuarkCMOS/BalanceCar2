@@ -21,8 +21,8 @@ public:
 
     void begin();
 
-    // speed: -PWM_MAX → +PWM_MAX
-    // dương = tiến, âm = lùi (đã tính chiều reversed)
+    // speed: -PWM_MAX → +PWM_MAX (giá trị PID thô)
+    // Nội bộ áp dụng deadband compensation trước khi gửi xuống MCPWM
     void setSpeed(int speed);
 
     void hardBrake();
@@ -40,4 +40,9 @@ private:
     HBridgeMotor   _motor;
     int            _currentSpeed = 0;
     bool           _reversed;
+
+    // Áp dụng deadband compensation:
+    // Trả về 0 nếu |speed| < PWM_DEADBAND_INPUT
+    // Ngược lại map [0..MAX] → [DEADBAND_OUTPUT..MAX]
+    int _applyDeadband(int speed) const;
 };

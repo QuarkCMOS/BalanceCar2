@@ -33,16 +33,45 @@ void MotorDriver::begin() {
     hardBrake();
 }
 
+// Áp dụng deadband compensation:
+//   - |speed| < PWM_DEADBAND_INPUT → brake hẳn, không gửi xung
+//   - Ngược lại → map tuyến tính từ [1..PWM_MAX] sang [PWM_DEADBAND_OUTPUT..PWM_MAX]
+//     để motor luôn nhận đủ điện thế khi bắt đầu quay
+//
+// Ví dụ với DEADBAND_INPUT=20, DEADBAND_OUTPUT=500, MAX=1023:
+//   speed=20   → effective_out=500
+//   speed=511  → effective_out=500 + (511/1023)*(1023-500) ≈ 761
+//   speed=1023 → effective_out=1023
+int MotorDriver::_applyDeadband(int speed) const {
+    if (abs(speed) < PWM_DEADBAND_INPUT) return 0;
+
+    // Map: [PWM_DEADBAND_INPUT .. PWM_MAX] → [PWM_DEADBAND_OUTPUT .. PWM_MAX]
+    int sign = (speed > 0) ? 1 : -1;
+    int mag  = abs(speed);
+
+    // Tỉ lệ trong dải có hiệu lực (0.0 → 1.0)
+    float ratio = (float)(mag) / (float)(PWM_MAX);
+
+    // Effective output: bắt đầu từ PWM_DEADBAND_OUTPUT, scale theo ratio
+    int out = (int)(PWM_DEADBAND_OUTPUT
+                  + ratio * (float)(PWM_MAX - PWM_DEADBAND_OUTPUT));
+
+    if (out > PWM_MAX) out = PWM_MAX;
+    return sign * out;
+}
+
 void MotorDriver::setSpeed(int speed) {
     speed = constrain(speed, -PWM_MAX, PWM_MAX);
 
-    if (abs(speed) < PWM_DEADBAND) {
+    // Áp dụng deadband — nếu quá nhỏ thì brake
+    int compensated = _applyDeadband(speed);
+    if (compensated == 0) {
         hardBrake();
         return;
     }
 
-    int effective = _reversed ? -speed : speed;
-    _currentSpeed = speed;
+    int effective = _reversed ? -compensated : compensated;
+    _currentSpeed = speed;   // lưu speed gốc (trước deadband) để telemetry phản ánh đúng PID output
 
     if (effective > 0) {
         _motor.setSpeed(effective, Dir::CW);
@@ -63,9 +92,6 @@ void MotorDriver::hardBrake() {
 
 void MotorDriver::softBrake() {
     _currentSpeed = 0;
-    // FIX LỖI 3: dùng setHardBrake() để stop hẳn, sau đó mới
-    // chuyển sang freewheel — đây là cách dừng "mềm" đơn giản và đáng tin cậy.
-    // DitherBrake API của thư viện này không hoạt động đúng với setSpeed(0).
     _motor.setHardBrake();
     delay(50);
     _motor.setFreewheel();
