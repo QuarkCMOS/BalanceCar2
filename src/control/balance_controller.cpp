@@ -26,20 +26,9 @@ void BalanceController::update(float dt) {
     IMUData d = _imu.getData();
 
     // ── 2. Tính góc acc theo axisMode ───────────────────────
-    // float a1, a2, gyroRate;
-    // switch (_axisMode) {
-    //     default:
-    //     case 0: a1 =  d.accX; a2 = d.accZ; gyroRate =  d.gyroY; break;
-    //     case 1: a1 =  d.accY; a2 = d.accZ; gyroRate =  d.gyroX; break;
-    //     case 2: a1 =  d.accX; a2 = d.accY; gyroRate =  d.gyroZ; break;
-    //     case 3: a1 = -d.accX; a2 = d.accZ; gyroRate =  d.gyroY; break;
-    //     case 4: a1 = -d.accY; a2 = d.accZ; gyroRate =  d.gyroX; break;
-    //     case 5: a1 = -d.accX; a2 = d.accY; gyroRate =  d.gyroZ; break;
-    // }
     float a1 = d.accY;
     float a2 = -d.accZ;
     float gyroRate = -d.gyroX;
-
 
     _accAngle = atan2f(a1, a2) * (180.0f / PI);
     float filteredAngle = _filter.update(_accAngle, gyroRate, dt);
@@ -53,9 +42,6 @@ void BalanceController::update(float dt) {
     }
 
     // ── 4. FIX: xử lý FALLEN trước khi check góc ────────────
-    // Bug cũ: check góc trước → handleFall() set FALLEN → return
-    // Lần sau vào lại, góc vẫn > FALL_ANGLE → handleFall() lại → loop reset PID
-    // Fix: nếu đang FALLEN thì brake và check xem có thể recover không
     if (_state == BalanceState::FALLEN) {
         _leftMotor.hardBrake();
         _rightMotor.hardBrake();
@@ -93,6 +79,10 @@ void BalanceController::setTargetAngle(float angle) {
     _targetAngle = angle;
 }
 
+void BalanceController::setDifferentialPWM(float delta) {
+    _diffDelta = delta;
+}
+
 // FIX: cho phép enable từ cả IDLE lẫn FALLEN
 // FIX: reset filter về góc acc thực tế trước khi chạy PID
 void BalanceController::enable() {
@@ -112,6 +102,7 @@ void BalanceController::disable() {
     _rightPWM = 0;
     _pid.reset();
     _state = BalanceState::IDLE;
+    _diffDelta = 0.0f;
 }
 
 void BalanceController::setPIDTunings(float kp, float ki, float kd) {
@@ -133,8 +124,22 @@ void BalanceController::applyMotorCommand(float command) {
     if (pwm >  PWM_MAX) pwm =  PWM_MAX;
     if (pwm < -PWM_MAX) pwm = -PWM_MAX;
 
-    _leftPWM  = pwm;
-    _rightPWM = pwm;
+    // Apply differential steering
+    int deltaInt = static_cast<int>(_diffDelta);
+    if (deltaInt >  PWM_MAX) deltaInt =  PWM_MAX;
+    if (deltaInt < -PWM_MAX) deltaInt = -PWM_MAX;
+
+    int leftSpd = pwm - deltaInt;
+    int rightSpd = pwm + deltaInt;
+
+    // Clamp to PWM range
+    if (leftSpd >  PWM_MAX) leftSpd =  PWM_MAX;
+    if (leftSpd < -PWM_MAX) leftSpd = -PWM_MAX;
+    if (rightSpd >  PWM_MAX) rightSpd =  PWM_MAX;
+    if (rightSpd < -PWM_MAX) rightSpd = -PWM_MAX;
+
+    _leftPWM  = leftSpd;
+    _rightPWM = rightSpd;
 
     _leftMotor.setSpeed(_leftPWM);
     _rightMotor.setSpeed(_rightPWM);

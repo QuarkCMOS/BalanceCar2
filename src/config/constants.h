@@ -30,14 +30,14 @@ constexpr float     WHEEL_DIAMETER_M      = 0.065f;
 constexpr float     ENC_TICKS_PER_REV     = ENC_PPR * GEAR_RATIO * 4;
 
 // ── PID ───────────────────────────────────────────────────────
-constexpr float     PID_KP                = 70.0f;
+constexpr float     PID_KP                = 200.0f;
 constexpr float     PID_KI                = 0.0f;
-constexpr float     PID_KD                = 1.0f;
+constexpr float     PID_KD                = 0.1f;
 constexpr float     PID_OUTPUT_MAX        = PWM_MAX;
 constexpr float     PID_INTEGRAL_MAX      = 200.0f;
 
 // ── Balance ───────────────────────────────────────────────────
-constexpr float     TARGET_ANGLE          = -5.0f;
+constexpr float     TARGET_ANGLE          = 0.0f;
 constexpr float     FALL_ANGLE            = 30.0f;
 constexpr float     ALPHA                 = 0.98f;
 

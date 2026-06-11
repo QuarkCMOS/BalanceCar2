@@ -47,9 +47,9 @@ MPU6050Manager      imu;
 ComplementaryFilter filter(ALPHA);
 
 MotorPinConfig cfgLeft  = { PIN_MOTOR_L1, PIN_MOTOR_L2,
-                             MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM0A, MCPWM0B };
+                              MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM0A, MCPWM0B };
 MotorPinConfig cfgRight = { PIN_MOTOR_R1, PIN_MOTOR_R2,
-                             MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM1A, MCPWM1B };
+                              MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM1A, MCPWM1B };
 
 MotorDriver motorLeft (cfgLeft,  true);
 MotorDriver motorRight(cfgRight, false);
@@ -87,10 +87,12 @@ bool  bootAngleCaptured = false;
 // Hướng di chuyển: 0=STOP 1=FWD 2=BWD 3=LEFT 4=RIGHT
 volatile int moveDir = 0;
 
-// Offset target angle khi điều khiển
-// Chỉnh sau khi xe đã balance ổn định
-constexpr float FWD_OFFSET  =  2.5f;
-constexpr float BWD_OFFSET  = -2.5f;
+// Offset target angle / PWM delta khi điều khiển
+// FWD/BWD: thay đổi target angle
+// LEFT/RIGHT: sử dụng differential motor control (delta PWM)
+constexpr float FWD_OFFSET   =  2.5f;
+constexpr float BWD_OFFSET   = -2.5f;
+constexpr float TURN_DELTA   = 100.0f;  // PWM delta cho left/right (max 1023)
 
 const char* axisModeStr[] = {
     "atan2(accX,accZ)/gyroY [DEFAULT]",
@@ -136,16 +138,34 @@ void printHelp() {
     Serial.println(F("=======================\n"));
 }
 
-// ── Áp dụng hướng di chuyển vào target angle ─────────────────
+// ── Áp dụng hướng di chuyển + differential steering ────────────
 // Gọi mỗi control loop
+// FWD/BWD: thay đổi target angle
+// LEFT/RIGHT: applied as PWM delta (differential motor control)
 void applyMoveDir() {
-    float base = runtimeTargetAngle;   // dùng runtime value, có thể chỉnh từ web
+    float base = runtimeTargetAngle;
+    
     switch (moveDir) {
-        case 1:  balancer.setTargetAngle(base + FWD_OFFSET); break;  // FWD
-        case 2:  balancer.setTargetAngle(base + BWD_OFFSET); break;  // BWD
-        case 3:  balancer.setTargetAngle(base + FWD_OFFSET); break;  // placeholder
-        case 4:  balancer.setTargetAngle(base + FWD_OFFSET); break;  // placeholder
-        default: balancer.setTargetAngle(base);              break;  // STOP
+        case 1:  // FWD
+            balancer.setTargetAngle(base + FWD_OFFSET);
+            balancer.setDifferentialPWM(0.0f);  // no turn
+            break;
+        case 2:  // BWD
+            balancer.setTargetAngle(base + BWD_OFFSET);
+            balancer.setDifferentialPWM(0.0f);  // no turn
+            break;
+        case 3:  // LEFT: right motor faster
+            balancer.setTargetAngle(base);
+            balancer.setDifferentialPWM(-TURN_DELTA);
+            break;
+        case 4:  // RIGHT: left motor faster
+            balancer.setTargetAngle(base);
+            balancer.setDifferentialPWM(TURN_DELTA);
+            break;
+        default: // STOP
+            balancer.setTargetAngle(base);
+            balancer.setDifferentialPWM(0.0f);
+            break;
     }
 }
 
@@ -240,8 +260,6 @@ void onWSCommand(const String& key, float value) {
     }
     else if (key == "set_target") {
         float angle = constrain(value, -30.0f, 30.0f);
-        // Ghi đè TARGET_ANGLE runtime — không cần recompile
-        // applyMoveDir() sẽ dùng runtimeTargetAngle thay vì hằng số
         runtimeTargetAngle = angle;
         balancer.setTargetAngle(angle);
         Serial.printf("[WS-TARGET] targetAngle=%.2f\n", angle);
@@ -263,7 +281,6 @@ void onWSCommand(const String& key, float value) {
     else if (key == "move") {
         // 0=STOP 1=FWD 2=BWD 3=LEFT 4=RIGHT
         moveDir = (int)value;
-        // applyMoveDir() sẽ dùng trong control loop
     }
 }
 
@@ -336,6 +353,8 @@ void loop() {
     }
 
     // ── Control loop 200 Hz ───────────────────────────────────
+    // QUAN TRỌNG: Vòng điều khiển chạy ĐỘCNHẬT với WebSocket!
+    // Nếu mất kết nối → xe vẫn tiếp tục cân bằng, không dừng
     uint32_t nowUs   = micros();
     uint32_t elapsed = nowUs - lastLoopUs;
     if (elapsed < LOOP_INTERVAL_US) return;
@@ -345,7 +364,6 @@ void loop() {
 
     if (!motorTestMode) {
         // Capture góc tại lần chạy balancer đầu tiên (~500ms sau boot)
-        // để dùng làm target angle mặc định — không cần chỉnh tay
         if (!bootAngleCaptured && millis() > 500) {
             bootAngle = balancer.getCurrentAngle();
             bootAngleCaptured = true;
@@ -364,6 +382,7 @@ void loop() {
     uint32_t nowMs = millis();
 
     // ── Telemetry WS @ TELEMETRY_INTERVAL_MS ─────────────────
+    // Chỉ gửi nếu có client, nhưng KHÔNG ảnh hưởng đến balance loop
     if (!telemetryPaused && nowMs - lastTelemetryMs >= TELEMETRY_INTERVAL_MS) {
         lastTelemetryMs = nowMs;
 
@@ -383,10 +402,9 @@ void loop() {
             };
             telemetry.update(pl);
             wsManager.sendTelemetry(telemetry.buildTelemetryJSON());
-            // sendTelemetry() tự log nếu frame bị drop do timeout
         }
     } else if (telemetryPaused) {
-        lastTelemetryMs = nowMs;  // reset timer để không flood khi resume
+        lastTelemetryMs = nowMs;
     }
 
     // ── Serial CSV 20 Hz ──────────────────────────────────────

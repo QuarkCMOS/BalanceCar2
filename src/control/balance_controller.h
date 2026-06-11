@@ -34,6 +34,11 @@ public:
     void setAxisMode(uint8_t mode);
 
     void setTargetAngle(float angle);
+    
+    // Differential steering: delta PWM giữa 2 motor
+    // Dương = quay phải (L fast, R slow)
+    // Âm = quay trái (R fast, L slow)
+    void setDifferentialPWM(float delta);
 
     // FIX: enable() hoạt động từ cả IDLE lẫn FALLEN
     // FIX: init filter về góc acc thực tế → tránh PID spike
@@ -68,6 +73,7 @@ private:
     int          _leftPWM      = 0;
     int          _rightPWM     = 0;
     uint8_t      _axisMode     = 0;
+    float        _diffDelta    = 0.0f;  // differential steering delta
 
     void handleFall();
     void applyMotorCommand(float command);
