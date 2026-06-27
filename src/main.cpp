@@ -54,10 +54,10 @@ MotorPinConfig cfgRight = { PIN_MOTOR_R1, PIN_MOTOR_R2,
 MotorDriver motorLeft (cfgLeft,  true);
 MotorDriver motorRight(cfgRight, false);
 
-BalanceController balancer(motorLeft, motorRight, imu, filter);
-
 EncoderManager encLeft (PIN_ENC_L_A, PIN_ENC_L_B, &g_ticksLeft);
 EncoderManager encRight(PIN_ENC_R_A, PIN_ENC_R_B, &g_ticksRight);
+
+BalanceController balancer(motorLeft, motorRight, imu, filter, encLeft, encRight);
 
 // ── Communication ─────────────────────────────────────────────
 WiFiManagerCustom wifi;
@@ -75,14 +75,15 @@ float runtimeKi = PID_KI;
 float runtimeKd = PID_KD;
 float runtimeTargetAngle = TARGET_ANGLE;  // target angle có thể chỉnh từ web
 
+// Tầng 1 (Position/Velocity) — tune từ web hoặc serial lệnh "V velKp posKi max"
+float runtimeVelKp         = VEL_KP_DEFAULT;
+float runtimePosKi         = POS_KI_DEFAULT;
+float runtimeVelMax        = VEL_CORRECTION_MAX;
+
 bool motorTestMode = false;
 
 // Tạm dừng gửi telemetry lên web (vẫn nhận lệnh)
 bool telemetryPaused = false;
-
-// Góc lúc khởi động — dùng làm target angle mặc định
-float bootAngle = 0.0f;
-bool  bootAngleCaptured = false;
 
 // Hướng di chuyển: 0=STOP 1=FWD 2=BWD 3=LEFT 4=RIGHT
 volatile int moveDir = 0;
@@ -123,16 +124,24 @@ void applyPID() {
                   runtimeKp, runtimeKi, runtimeKd);
 }
 
+void applyPositionTunings() {
+    balancer.setPositionTunings(runtimeVelKp, runtimePosKi, runtimeVelMax);
+    Serial.printf("[POS] velKp=%.3f  posKi=%.4f  max=%.1f°\n",
+                  runtimeVelKp, runtimePosKi, runtimeVelMax);
+}
+
 void printHelp() {
     Serial.println(F("\n===== BALANCE CAR ====="));
-    Serial.println(F("  e           — Enable"));
-    Serial.println(F("  d           — Disable"));
-    Serial.println(F("  r           — Reset + Enable"));
-    Serial.println(F("  p           — In PID"));
-    Serial.println(F("  P kp ki kd  — Set PID"));
-    Serial.println(F("  x 0-5       — Trục góc"));
-    Serial.println(F("  M L|R spd   — Test motor"));
-    Serial.println(F("  h           — Help"));
+    Serial.println(F("  e                  — Enable"));
+    Serial.println(F("  d                  — Disable"));
+    Serial.println(F("  r                  — Reset + Enable"));
+    Serial.println(F("  p                  — In PID hiện tại"));
+    Serial.println(F("  P kp ki kd         — Set Angle PID (tầng 2)"));
+    Serial.println(F("  V velKp posKi max  — Set Position loop (tầng 1)"));
+    Serial.println(F("  z                  — Reset vị trí tham chiếu"));
+    Serial.println(F("  x 0-5              — Trục góc"));
+    Serial.println(F("  M L|R spd          — Test motor"));
+    Serial.println(F("  h                  — Help"));
     Serial.printf (  "WiFi AP: %-15s  ws://192.168.4.1:%d\n",
                    AP_SSID, WS_PORT);
     Serial.println(F("=======================\n"));
@@ -198,6 +207,10 @@ void processLine(char* line) {
                 Serial.println(F("[CMD] RESET + ENABLED"));
                 break;
             case 'p': case 'P': applyPID();   break;
+            case 'z': case 'Z':
+                balancer.resetPositionRef();
+                Serial.println(F("[CMD] Position ref RESET"));
+                break;
             case 'h': case 'H': printHelp();  break;
             default:
                 Serial.printf("[?] %s\n", line);
@@ -227,6 +240,21 @@ void processLine(char* line) {
             applyPID();
         } else {
             Serial.println(F("[ERR] P <kp> <ki> <kd>"));
+        }
+        return;
+    }
+
+    if ((cmd == 'V' || cmd == 'v') && line[1] == ' ') {
+        float vkp, pki, vmax;
+        if (sscanf(line + 2, "%f %f %f", &vkp, &pki, &vmax) == 3
+            && vkp >= 0 && pki >= 0 && vmax > 0) {
+            runtimeVelKp  = vkp;
+            runtimePosKi  = pki;
+            runtimeVelMax = vmax;
+            applyPositionTunings();
+        } else {
+            Serial.println(F("[ERR] V <velKp> <posKi> <maxCorrection>"));
+            Serial.println(F("  Ex: V 0.5 0.005 5.0"));
         }
         return;
     }
@@ -281,6 +309,26 @@ void onWSCommand(const String& key, float value) {
     else if (key == "move") {
         // 0=STOP 1=FWD 2=BWD 3=LEFT 4=RIGHT
         moveDir = (int)value;
+        // Reset vị trí tham chiếu khi bắt đầu di chuyển
+        // để position loop không chống lại lệnh điều khiển
+        if (moveDir != 0) {
+            balancer.resetPositionRef();
+        } else {
+            // Dừng lại: reset ref về vị trí hiện tại để không bị kéo về điểm cũ
+            balancer.resetPositionRef();
+        }
+    }
+    // Tầng 1: tune qua web — gửi set_vel_kp, set_pos_ki, set_vel_max
+    // Protocol: gửi lần lượt set_vel_kp → set_pos_ki → set_vel_max (apply khi nhận max)
+    else if (key == "set_vel_kp") { runtimeVelKp  = value; }
+    else if (key == "set_pos_ki") { runtimePosKi  = value; }
+    else if (key == "set_vel_max") {
+        runtimeVelMax = value;
+        applyPositionTunings();
+    }
+    else if (key == "pos_reset") {
+        balancer.resetPositionRef();
+        Serial.println("[WS] Position ref RESET");
     }
 }
 
@@ -320,8 +368,14 @@ void setup() {
     wsManager.onCommand(onWSCommand);
 
     Serial.printf("[INIT] Dashboard: mở file HTML → ws://192.168.4.1:%d\n", WS_PORT);
-    Serial.println(F("[INIT] Gõ 'e' để bắt đầu, hoặc nhấn ON trên dashboard.\n"));
     Serial.println(F("ms,angle,target,pid,pwl,pwr,rl,rr,state"));
+
+    // Auto-enable: bắt đầu cân bằng ngay khi bật nguồn, không cần lệnh từ web/serial.
+    // TARGET_ANGLE = 0.0 la goc chuan cua MPU (khong phai goc luc bat nguon).
+    // enable() se doc goc acc thuc te de init complementary filter khong bi PID spike.
+    balancer.setTargetAngle(TARGET_ANGLE);
+    balancer.enable();
+    Serial.println(F("[BOOT] Balance ENABLED — target=0 (MPU standard angle)"));
 
     lastLoopUs      = micros();
     lastPrintMs     = millis();
@@ -363,19 +417,11 @@ void loop() {
     float dt = elapsed * 1e-6f;
 
     if (!motorTestMode) {
-        // Capture góc tại lần chạy balancer đầu tiên (~500ms sau boot)
-        if (!bootAngleCaptured && millis() > 500) {
-            bootAngle = balancer.getCurrentAngle();
-            bootAngleCaptured = true;
-            runtimeTargetAngle = bootAngle;
-            balancer.setTargetAngle(bootAngle);
-            Serial.printf("[BOOT] bootAngle=%.2f — dùng làm target angle mặc định\n",
-                          bootAngle);
-        }
         applyMoveDir();
         balancer.update(dt);
     }
 
+    // Encoder update — luôn chạy kể cả khi motorTestMode
     encLeft.update(dt);
     encRight.update(dt);
 
@@ -391,14 +437,17 @@ void loop() {
             EncoderData er = encRight.getData();
 
             TelemetryPayload pl{
-                .angle       = balancer.getCurrentAngle(),
-                .targetAngle = balancer.getTargetAngle(),
-                .pidOutput   = balancer.getPIDOutput(),
-                .pwmLeft     = balancer.getLeftPWM(),
-                .pwmRight    = balancer.getRightPWM(),
-                .rpmLeft     = el.rpm,
-                .rpmRight    = er.rpm,
-                .state       = stateStr(balancer.getState())
+                .angle           = balancer.getCurrentAngle(),
+                .targetAngle     = balancer.getTargetAngle(),
+                .pidOutput       = balancer.getPIDOutput(),
+                .pwmLeft         = balancer.getLeftPWM(),
+                .pwmRight        = balancer.getRightPWM(),
+                .rpmLeft         = el.rpm,
+                .rpmRight        = er.rpm,
+                .velocity        = balancer.getVelocity(),
+                .angleCorrection = balancer.getAngleCorrection(),
+                .positionTicks   = balancer.getPositionTicks(),
+                .state           = stateStr(balancer.getState())
             };
             telemetry.update(pl);
             wsManager.sendTelemetry(telemetry.buildTelemetryJSON());

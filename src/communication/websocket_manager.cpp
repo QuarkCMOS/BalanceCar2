@@ -1,5 +1,5 @@
 #include "websocket_manager.h"
-#include "../../src/config/constants.h"
+#include "../config/constants.h"
 
 WebSocketManager* WebSocketManager::_instance = nullptr;
 

@@ -37,9 +37,27 @@ constexpr float     PID_OUTPUT_MAX        = PWM_MAX;
 constexpr float     PID_INTEGRAL_MAX      = 200.0f;
 
 // ── Balance ───────────────────────────────────────────────────
-constexpr float     TARGET_ANGLE          = 0.0f;
+constexpr float     TARGET_ANGLE          = -4.0f;
 constexpr float     FALL_ANGLE            = 30.0f;
 constexpr float     ALPHA                 = 0.98f;
+
+// ── Position / Velocity loop (Tầng 1) ────────────────────────
+// VEL_KP_DEFAULT:  damping vận tốc tức thời.
+//   Khi xe đang trôi với v (m/s), cộng v*VEL_KP vào target angle để phanh lại.
+//   Tăng nếu xe phanh chậm. Giảm nếu xe bị oscillate (lắc qua lại).
+//   Khuyến nghị bắt đầu: 0.3 ~ 0.8
+constexpr float     VEL_KP_DEFAULT        = 0.5f;
+
+// POS_KI_DEFAULT:  tích phân vị trí (kéo xe về chỗ ban đầu sau khi bị đẩy).
+//   Mỗi tick encoder lệch khỏi vị trí ref → tích lũy correction góc.
+//   Tăng nếu xe vẫn trôi sau khi dừng. Giảm nếu xe rung/dao động chậm.
+//   Khuyến nghị bắt đầu: 0.002 ~ 0.01
+constexpr float     POS_KI_DEFAULT        = 0.005f;
+
+// VEL_CORRECTION_MAX: giới hạn angle correction từ tầng 1 (độ).
+//   Cần nhỏ hơn FALL_ANGLE nhiều, không override tầng 2 quá mạnh.
+//   Khuyến nghị bắt đầu: 3.0 ~ 8.0
+constexpr float     VEL_CORRECTION_MAX    = 5.0f;
 
 // ── Timing ────────────────────────────────────────────────────
 constexpr uint32_t  LOOP_INTERVAL_US      = 5000;  // 200 Hz control loop
